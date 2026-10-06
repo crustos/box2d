@@ -1697,6 +1697,7 @@ extern const float _Collider2D_ox[];
 extern const float _Collider2D_oy[];
 extern const float _Collider2D_hw[];
 extern const float _Collider2D_hh[];
+extern const float _Collider2D_edge_r[];
 extern const float _Collider2D_cos[];
 extern const float _Collider2D_sin[];
 extern const float _Collider2D_friction[];
@@ -1994,7 +1995,9 @@ static void b2u_add_shape( b2BodyId bodyId, int ci, b2Vec2 offset )
 	}}
 	else
 	{{
-		b2Polygon box = b2MakeOffsetRoundedBox( _Collider2D_hw[ci], _Collider2D_hh[ci], offset, rotation, {POLY_RADIUS} );
+		/* BoxCollider2D.edgeRadius rounds the box outward */
+		float er = _Collider2D_edge_r[ci] > 0.0f ? _Collider2D_edge_r[ci] : {POLY_RADIUS};
+		b2Polygon box = b2MakeOffsetRoundedBox( _Collider2D_hw[ci], _Collider2D_hh[ci], offset, rotation, er );
 		b2CreatePolygonShape( bodyId, &def, &box );
 	}}
 }}

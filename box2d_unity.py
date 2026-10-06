@@ -1879,6 +1879,7 @@ extern int _Rigidbody2D_owner_inst[];
 void engine_rb2d_get_pos( int rb, float* x, float* y );
 void engine_rb2d_set_pos( int rb, float x, float y );
 void engine_col2d_center( int ci, float* x, float* y );
+void engine_col2d_frame( int ci, float* o, float* b );
 void engine_col2d_contact( int a, int b );
 
 void engine_box2d_step( void );
@@ -1906,6 +1907,103 @@ static int b2u_last_type[B2U_MAX_RB];
 /* Static bodies of the colliders without a Rigidbody2D */
 static b2BodyId b2u_col_body[B2U_MAX_COL];
 static int b2u_col_has_body[B2U_MAX_COL];
+
+/* A body's collider: its GameObject's origin (body frame) and world rotation-scale
+ * basis its shapes were made for; a script scaling or turning it reshapes them */
+static float b2u_col_frame[B2U_MAX_COL][6];
+static int b2u_col_framed[B2U_MAX_COL];
+
+static b2Vec2 b2u_map( b2Vec2 v, const float* m, b2Vec2 from, b2Vec2 to )
+{{
+	b2Vec2 d = b2Sub( v, from );
+	return (b2Vec2){{ to.x + m[0] * d.x + m[1] * d.y, to.y + m[2] * d.x + m[3] * d.y }};
+}}
+
+/* ponytail: a circle's or capsule's radius grows by the larger axis scale, as
+ * Unity's circle does; a polygon's (edge) radius stays */
+static void b2u_reshape( b2ShapeId s, const float* m, b2Vec2 from, b2Vec2 to )
+{{
+	float k = fmaxf( sqrtf( m[0] * m[0] + m[2] * m[2] ), sqrtf( m[1] * m[1] + m[3] * m[3] ) );
+	b2ShapeType type = b2Shape_GetType( s );
+	if ( type == b2_polygonShape )
+	{{
+		b2Polygon g = b2Shape_GetPolygon( s );
+		b2Vec2 p[B2_MAX_POLYGON_VERTICES];
+		for ( int i = 0; i < g.count; ++i )
+			p[i] = b2u_map( g.vertices[i], m, from, to );
+		b2Hull hull = b2ComputeHull( p, g.count );
+		if ( hull.count == 0 )
+			return;
+		b2Polygon n = b2MakePolygon( &hull, g.radius );
+		b2Shape_SetPolygon( s, &n );
+	}}
+	else if ( type == b2_circleShape )
+	{{
+		b2Circle c = b2Shape_GetCircle( s );
+		c.center = b2u_map( c.center, m, from, to );
+		c.radius *= k;
+		b2Shape_SetCircle( s, &c );
+	}}
+	else if ( type == b2_capsuleShape )
+	{{
+		b2Capsule c = b2Shape_GetCapsule( s );
+		c.center1 = b2u_map( c.center1, m, from, to );
+		c.center2 = b2u_map( c.center2, m, from, to );
+		c.radius *= k;
+		b2Shape_SetCapsule( s, &c );
+	}}
+}}
+
+/* Record collider ci's frame on rb's body at (x, y) */
+static void b2u_col_set_frame( int ci, float x, float y )
+{{
+	float* f = b2u_col_frame[ci];
+	engine_col2d_frame( ci, f, f + 2 );
+	f[0] -= x;
+	f[1] -= y;
+	b2u_col_framed[ci] = 1;
+}}
+
+/* Reshape the colliders of rb's body whose GameObject's scale or rotation changed */
+static void b2u_follow_frames( int rb, float x, float y )
+{{
+	b2ShapeId shapes[64];
+	int n = -1;
+	for ( int ci = 0; ci < _Collider2D_count && ci < B2U_MAX_COL; ++ci )
+	{{
+		if ( _Collider2D_rb2d[ci] != rb || b2u_col_framed[ci] == 0 )
+			continue;
+		float* f = b2u_col_frame[ci];
+		float o[2], b[4];
+		engine_col2d_frame( ci, o, b );
+		o[0] -= x;
+		o[1] -= y;
+		if ( fabsf( b[0] - f[2] ) + fabsf( b[1] - f[3] ) + fabsf( b[2] - f[4] ) + fabsf( b[3] - f[5] ) < 1e-5f )
+			continue;
+		float det = f[2] * f[5] - f[3] * f[4];
+		if ( fabsf( det ) < 1e-12f )
+			continue; /* a zero scale had no shape to scale back up */
+		/* the change: new basis times the old one's inverse */
+		float inv[4] = {{ f[5] / det, -f[3] / det, -f[4] / det, f[2] / det }};
+		float m[4] = {{ b[0] * inv[0] + b[1] * inv[2], b[0] * inv[1] + b[1] * inv[3],
+						b[2] * inv[0] + b[3] * inv[2], b[2] * inv[1] + b[3] * inv[3] }};
+		if ( n < 0 )
+			/* ponytail: the first 64 shapes of a body; raise for bigger compounds */
+			n = b2Body_GetShapes( b2u_rb_body[rb], shapes, 64 );
+		for ( int k = 0; k < n; ++k )
+		{{
+			if ( (int)(intptr_t)b2Shape_GetUserData( shapes[k] ) - 1 == ci )
+				b2u_reshape( shapes[k], m, (b2Vec2){{ f[0], f[1] }}, (b2Vec2){{ o[0], o[1] }} );
+		}}
+		f[0] = o[0];
+		f[1] = o[1];
+		f[2] = b[0];
+		f[3] = b[1];
+		f[4] = b[2];
+		f[5] = b[3];
+		b2u_last_mass[rb] = -1.0f; /* the authored mass, again */
+	}}
+}}
 
 /* Touching collider pairs, lo < hi, maintained from contact begin and end */
 static int b2u_pair_a[B2U_MAX_PAIRS];
@@ -2037,6 +2135,7 @@ static void b2u_create_body( int rb )
 			off = b2InvRotateVector( def.rotation, (b2Vec2){{ cx - x, cy - y }} );
 		}}
 		b2u_add_shape( bodyId, ci, off );
+		b2u_col_set_frame( ci, x, y );
 	}}
 
 	/* Rigidbody2D.mass: scale the shape-derived mass data to the authored mass */
@@ -2123,6 +2222,7 @@ void engine_box2d_step( void )
 		b2BodyId bodyId = b2u_rb_body[rb];
 		float x, y;
 		engine_rb2d_get_pos( rb, &x, &y );
+		b2u_follow_frames( rb, x, y );
 		if ( x != b2u_last_x[rb] || y != b2u_last_y[rb] )
 		{{
 			/* transform.position written by a script */

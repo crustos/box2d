@@ -2166,12 +2166,7 @@ void engine_box2d_step( void )
 #if B2_PACK_INJECTED == 0
 	/* Standard API: touching pairs from the contact event arrays */
 	b2ContactEvents events = b2World_GetContactEvents( b2u_world );
-	for ( int i = 0; i < events.beginCount; ++i )
-	{{
-		b2ContactBeginTouchEvent* e = events.beginEvents + i;
-		b2u_on_begin( (int)(intptr_t)b2Shape_GetUserData( e->shapeIdA ) - 1,
-					  (int)(intptr_t)b2Shape_GetUserData( e->shapeIdB ) - 1 );
-	}}
+	/* Ends first: a reshaped collider's contacts end and begin again in one step */
 	for ( int i = 0; i < events.endCount; ++i )
 	{{
 		b2ContactEndTouchEvent* e = events.endEvents + i;
@@ -2180,6 +2175,12 @@ void engine_box2d_step( void )
 			b2u_on_end( (int)(intptr_t)b2Shape_GetUserData( e->shapeIdA ) - 1,
 						(int)(intptr_t)b2Shape_GetUserData( e->shapeIdB ) - 1 );
 		}}
+	}}
+	for ( int i = 0; i < events.beginCount; ++i )
+	{{
+		b2ContactBeginTouchEvent* e = events.beginEvents + i;
+		b2u_on_begin( (int)(intptr_t)b2Shape_GetUserData( e->shapeIdA ) - 1,
+					  (int)(intptr_t)b2Shape_GetUserData( e->shapeIdB ) - 1 );
 	}}
 {SENSOR_EVENTS}#endif
 
